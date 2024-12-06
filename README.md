@@ -13,10 +13,11 @@ If the recipe has been downloaded as a "related recipe" before, it will not be d
 pip install -r requirements.txt
 ```
 3. Download the sitemaps
+
 I chose to download the sitemaps manually. Simply open them in a browser and save them to the `yummly_recipes/sitemaps` directory, or write a script to download them.
 See sitemaps.txt for a list of sitemaps.
 
-4. Run the scraper
+5. Run the scraper
 ```bash
 python yummly_scraper.py
 ```
