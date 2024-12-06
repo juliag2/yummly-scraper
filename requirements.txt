@@ -2,3 +2,4 @@ selenium
 undetected_chromedriver
 beautifulsoup4
 setuptools
+curl_cffi

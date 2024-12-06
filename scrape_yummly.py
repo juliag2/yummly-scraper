@@ -7,6 +7,7 @@ import random
 import re
 import urllib.parse
 import traceback
+from curl_cffi import requests
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -33,27 +34,29 @@ def fetch_sitemap(sitemap):
         return []
 
 
-def extract_initial_state(url, driver):
+def extract_initial_state(url, session):
     """
     Extract the window.__INITIAL_STATE__ content from a Yummly recipe page
     """
     try:
-        # Fetch the page
-        driver.get(url)
-        wait_for_cloudflare(driver)
+        resp = get(url, session)
+        if resp is None:
+            return None
 
-        title = driver.find_element(By.TAG_NAME, "title")
-        if 'error' in title.get_attribute('innerHTML').lower():
+        if 'error' in resp.title.string.lower():
             print("Error page detected")
             return None
 
-        scripts = driver.find_elements(By.TAG_NAME, "script")
+        scripts = resp.find_all('script')
 
         initial_state = None
 
         for script in scripts:
-            if "window.__INITIAL_STATE__" in script.get_attribute('innerHTML'):
-                initial_state = script.get_attribute('innerHTML')
+            strings = list(script.stripped_strings)
+            if len(strings) == 0:
+                continue
+            if "window.__INITIAL_STATE__" in strings[0]:
+                initial_state = strings[0]
                 break
 
         if not initial_state:
@@ -143,24 +146,46 @@ def strip_recipe_data(all_data, scraped_urls, failed_urls):
 
     return data
 
-def wait_for_cloudflare(driver):
-    count = 0
-    while True:
-        title = driver.find_element(By.TAG_NAME, "title")
-
-        while not title:
-            time.sleep(0.2)
-            title = driver.find_element(By.TAG_NAME, "title")
-
-        if 'yummly' in title.get_attribute('innerHTML').lower():
-            return
+def get(url:str, session:requests.Session, retry_count:int = 0) -> BeautifulSoup | None:
+    response = session.get(url)
+    if response.status_code == 404:
+        return None
+    if response.status_code != 200:
+        if retry_count < 3:
+            time.sleep(pow(3, retry_count + 1))
+            return get(url, session, retry_count + 1)
         else:
-            print(title.get_attribute('innerHTML'))
-        time.sleep(1)
-        count += 1
-        if count > 5:
-            input("Please solve the Cloudflare challenge and press Enter to continue...")
+            print(f"Failed to get {url} after 3 retries")
+            return None
+    soup = BeautifulSoup(response.text, 'html.parser')
+    if not "yummly" in soup.title.string.lower():
+        opts = uc.ChromeOptions()
+        opts.headless = False
+        driver = uc.Chrome(options=opts)
+        driver.get(url)
+        input("Press enter once you are past cloudflare...")
+        session = get_session_from_selenium(driver)
+        driver.quit()
+        response = session.get(url)
+        if response.status_code != 200:
+            return response
+        soup = BeautifulSoup(response.text, 'html.parser')
 
+        if not "yummly" in soup.title.string.lower():
+            exit("Failed to bypass cloudflare")
+    return soup
+
+def get_session_from_selenium(driver):
+    """
+    Create a requests session with cookies and headers from selenium
+    """
+    session = requests.Session(impersonate = "chrome131")
+
+    # Copy cookies from selenium to requests
+    for cookie in driver.get_cookies():
+        session.cookies.set(cookie['name'], cookie['value'])
+
+    return session
 
 def scrape_yummly_recipes(output_dir='yummly_recipes'):
     """
@@ -175,6 +200,8 @@ def scrape_yummly_recipes(output_dir='yummly_recipes'):
 
     driver.get("https://yummly.com/")
     input("Press enter once you are past cloudflare...")
+    session = get_session_from_selenium(driver)
+    driver.quit()
 
     # Create output directories
     os.makedirs(output_dir, exist_ok=True)
@@ -214,10 +241,10 @@ def scrape_yummly_recipes(output_dir='yummly_recipes'):
             print(f'New URL: {url}')
 
             # Random delay to be nice to the server
-            time.sleep(random.uniform(0.5, 2))
+            time.sleep(random.uniform(0.2, 0.5))
 
             # The __INITIAL_STATE__ contains all data about the page, including the recipes
-            initial_state = extract_initial_state(url, driver)
+            initial_state = extract_initial_state(url, session)
 
             if initial_state:
                 for recipe_data in strip_recipe_data(initial_state, scraped_urls, failed_urls):
